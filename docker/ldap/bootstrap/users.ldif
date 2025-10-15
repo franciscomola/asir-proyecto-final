@@ -1,0 +1,16 @@
+dn: uid=adminuser,ou=usuarios,dc=asir,dc=local
+objectClass: inetOrgPerson
+cn: Admin User
+sn: User
+uid: adminuser
+userPassword: admin123
+mail: adminuser@asir.local
+
+dn: uid=usuario1,ou=usuarios,dc=asir,dc=local
+objectClass: inetOrgPerson
+cn: Usuario Uno
+sn: Uno
+uid: usuario1
+userPassword: user123
+mail: usuario1@asir.local
+
