@@ -8,7 +8,9 @@ dist/
 .env
 *.pem
 *.key
-
+docker/ldap/config/
+docker/ldap/data/
+docker/phpLDAPadmin/
 # OS
 .DS_Store
 Thumbs.db
