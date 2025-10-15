@@ -1,0 +1,19 @@
+# Node / build artifacts
+node_modules/
+dist/
+
+# Docker
+**/data/
+**/db/
+.env
+*.pem
+*.key
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+

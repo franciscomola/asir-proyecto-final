@@ -1,0 +1,21 @@
+version: "3.8"
+services:
+  web:
+    image: nginx:alpine
+    container_name: asir_test_nginx
+    volumes:
+      - ./docker/nginx/html:/usr/share/nginx/html:ro
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+  whoami:
+    image: traefik/whoami
+    container_name: asir_whoami
+    networks:
+      - asir_net
+
+networks:
+  asir_net:
+    driver: bridge
+
