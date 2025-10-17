@@ -12,6 +12,7 @@ services:
     volumes:
       - ./docker/ldap/data:/var/lib/ldap
       - ./docker/ldap/config:/etc/ldap/slapd.d
+#      - ./docker/ldap/bootstrap:/container/service/slapd/assets/config/bootstrap/ldif/custom
     ports:
       - "389:389"
     restart: unless-stopped
@@ -31,6 +32,47 @@ services:
     restart: unless-stopped
     networks:
       - asir_net
+
+  db:
+    image: mariadb:11
+    container_name: asir_mariadb
+    command: --transaction-isolation=READ-COMMITTED --binlog-format=ROW
+    restart: unless-stopped
+    volumes:
+      - ./docker/nextcloud/db:/var/lib/mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+    networks:
+      - asir_net
+
+  nextcloud:
+    image: nextcloud:${NEXTCLOUD_VERSION}
+    container_name: asir_nextcloud
+    ports:
+      - "8081:80"
+    links:
+      - db
+      - openldap
+    volumes:
+      - ./docker/nextcloud/html:/var/www/html
+    environment:
+      - MYSQL_HOST=db
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - NEXTCLOUD_ADMIN_USER=${NEXTCLOUD_ADMIN_USER}
+      - NEXTCLOUD_ADMIN_PASSWORD=${NEXTCLOUD_ADMIN_PASSWORD}
+      - NEXTCLOUD_TRUSTED_DOMAINS=${NEXTCLOUD_TRUSTED_DOMAINS}
+    depends_on:
+      - db
+      - openldap
+    restart: unless-stopped
+    networks:
+      - asir_net
+
 
 networks:
   asir_net:

@@ -1,8 +1,0 @@
-dn: ou=usuarios,dc=asir,dc=local
-objectClass: organizationalUnit
-ou: usuarios
-
-dn: ou=grupos,dc=asir,dc=local
-objectClass: organizationalUnit
-ou: grupos
-
