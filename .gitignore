@@ -1,0 +1,40 @@
+# =======================
+# ARCHIVOS SENSIBLES
+# =======================
+.env
+*.key
+*.crt
+
+# =======================
+# BACKUPS
+# =======================
+backup/full/
+backup/restic/
+backup/tmp*/
+script/logs/
+
+# =======================
+# DOCKER DATA (no versionar)
+# =======================
+docker/nextcloud/data/
+docker/nextcloud/db/
+docker/nextcloud/html/data/
+docker/ldap/data/
+docker/ldap/config/
+docker/backup/repo/
+monitoring/grafana_data/
+monitoring/prometheus/data/
+
+# =======================
+# TEMPORAL / CACHE
+# =======================
+*.log
+*.pid
+*.swp
+*.tmp
+*~
+
+# Python
+__pycache__/
+*.pyc
+

@@ -1,0 +1,195 @@
+version: "3.8"
+
+services:
+  openldap:
+    image: osixia/openldap:1.5.0
+    container_name: asir_openldap
+    environment:
+      LDAP_ORGANISATION: ${LDAP_ORGANISATION}
+      LDAP_DOMAIN: ${LDAP_DOMAIN}
+      LDAP_ADMIN_PASSWORD: ${LDAP_ADMIN_PASSWORD}
+      LDAP_TLS: "false"
+    volumes:
+      - ./docker/ldap/data:/var/lib/ldap
+      - ./docker/ldap/config:/etc/ldap/slapd.d
+    ports:
+      - "389:389" # Útil para pruebas, aunque no estrictamente necesario si solo accede Nextcloud
+    restart: unless-stopped
+    networks:
+      - asir_net
+
+  phpldapadmin:
+    image: osixia/phpldapadmin:0.9.0
+    container_name: asir_phpldapadmin
+    environment:
+      PHPLDAPADMIN_LDAP_HOSTS: ${PHPLDAPADMIN_LDAP_HOSTS} # Tu .env debe tener PHPLDAPADMIN_LDAP_HOSTS=asir_openldap
+      PHPLDAPADMIN_HTTPS: ${PHPLDAPADMIN_HTTPS}
+    ports:
+      - "${PHP_LDAPADMIN_PORT}:80" # Puerto 8090 para phpLDAPadmin (o el ${PHP_LDAPADMIN_PORT} que definimos)
+    depends_on:
+      - openldap
+    restart: unless-stopped
+    networks:
+      - asir_net
+
+  db:
+    image: mariadb:11.8
+    container_name: asir_mariadb
+    command: --transaction-isolation=READ-COMMITTED --binlog-format=ROW
+    restart: always
+    volumes:
+      - ./docker/nextcloud/db:/var/lib/mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+    networks:
+      - asir_net
+
+  nextcloud:
+    # MODIFICACIÓN 1: Cambiamos a la imagen FPM (asumiendo que NEXTCLOUD_VERSION es 28.0)
+    image: nextcloud:28.0-fpm-alpine 
+    container_name: asir_nextcloud
+    # MODIFICACIÓN 2: Quitamos 'ports' y 'links'
+    volumes:
+      - ./docker/nextcloud/html:/var/www/html
+      - ./docker/nextcloud/data:/var/www/html/data # Añadido para datos persistentes
+      - ./docker/nextcloud/config:/var/www/html/config # Añadido para config persistente
+    environment:
+      - MYSQL_HOST=db
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - NEXTCLOUD_ADMIN_USER=${NEXTCLOUD_ADMIN_USER}
+      - NEXTCLOUD_ADMIN_PASSWORD=${NEXTCLOUD_ADMIN_PASSWORD}
+      - NEXTCLOUD_TRUSTED_DOMAINS=${NEXTCLOUD_TRUSTED_DOMAINS}
+      # MODIFICACIÓN 3: Variables para Nginx/FPM
+      - NEXTCLOUD_TRUSTED_PROXIES=nginx # Nombre del servicio nginx
+      - OVERWRITEPROTOCOL=https
+      - OVERWRITEHOST=${OVERWRITEHOST}
+      - APACHE_DISABLE_REWRITE_IP=1
+    depends_on:
+      - db
+      - openldap
+    restart: unless-stopped
+    networks:
+      - asir_net
+
+  # PASO 2: AÑADIR EL SERVICIO NGINX
+  nginx:
+    image: nginx:latest
+    container_name: asir_nginx
+    restart: unless-stopped
+    ports:
+      # Puertos 80 (HTTP) y 443 (HTTPS) del host
+      - "${HTTP_PORT}:80"   # Usaremos 80
+      - "${HTTPS_PORT}:443"  # Usaremos 443
+    volumes:
+      # Montamos la configuración de Nginx
+      - ./docker/nginx/conf.d:/etc/nginx/conf.d:ro
+      # Montamos los certificados SSL
+      - ./docker/nginx/certs:/etc/nginx/certs:ro
+      # Montamos el código de Nextcloud (para servir archivos estáticos rápido)
+      - ./docker/nextcloud/html:/var/www/html:ro
+    networks:
+      - asir_net
+    depends_on:
+      - nextcloud
+  restic-backup:
+    build:
+      context: ./docker/backup/ # Directorio donde está el Dockerfile_Restic
+      dockerfile: Dockerfile_Restic
+    container_name: asir_restic_backup
+    restart: "no" # No queremos que arranque automáticamente
+    environment:
+        - RESTIC_PASSWORD=${RESTIC_PASSWORD}
+        - RESTIC_REPOSITORY=${RESTIC_REPOSITORY}
+        # Variables para el backup de la DB
+        - DB_HOST=db # Nombre de tu servicio MariaDB
+        - DB_USER=${MYSQL_USER}
+        - DB_PASSWORD=${MYSQL_PASSWORD}
+        - DB_NAME=${MYSQL_DATABASE}
+        - BACKUP_PATH=/tmp/backup
+    volumes:
+        # 1. El repositorio (donde se guardan los backups)
+        - ./docker/backup/repo:/mnt/restic_repo
+        # 2. Acceso de SOLO LECTURA a los datos de Nextcloud
+        - ./docker/nextcloud/html:/var/www/html:ro
+        - ./docker/nextcloud/config:/var/www/html/config:ro
+        - ./docker/nextcloud/data:/var/www/html/data:ro
+        # 3. Acceso de SOLO LECTURA a los datos de LDAP
+        - ./docker/ldap/config:/etc/ldap/slapd.d:ro
+        - ./docker/ldap/data:/var/lib/ldap:ro
+    networks:
+        - asir_net
+    depends_on:
+        - db
+        - openldap
+        - nextcloud
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: asir_prometheus
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - asir_net
+    restart: unless-stopped
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: asir_cadvisor
+    restart: unless-stopped
+    ports:
+      - "8085:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    networks:
+      - asir_net
+  grafana:
+    image: grafana/grafana:latest
+    container_name: asir_grafana
+    user: "0"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=grafanapass123
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel,grafana-clock-panel
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+    volumes:
+      - ./monitoring/grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+    ports:
+      - "${GRAFANA_PORT}:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - asir_net
+    restart: unless-stopped
+
+
+  node_exporter:
+    image: prom/node-exporter:latest
+    container_name: asir_node_exporter
+    restart: unless-stopped
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.ignored-mount-points=^/(sys|proc|dev|host|etc)($$|/)'
+    networks:
+      - asir_net
+
+
+networks:
+  asir_net:
+    driver: bridge

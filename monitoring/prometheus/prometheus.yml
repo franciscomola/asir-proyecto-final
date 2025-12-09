@@ -1,0 +1,30 @@
+global:
+  scrape_interval: 5s  # Intervalo más frecuente para tener métricas en tiempo real
+
+scrape_configs:
+  # --- Prometheus ---
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['asir_prometheus:9090']
+
+  # --- Node Exporter (host físico o WSL2) ---
+  - job_name: 'node_exporter'
+    static_configs:
+      - targets: ['asir_node_exporter:9100']
+
+  # --- cAdvisor (monitoriza todos los contenedores Docker) ---
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['asir_cadvisor:8080']
+
+#  # --- Nextcloud (si añades plugin prometheus más adelante) ---
+# - job_name: 'nextcloud'
+#    static_configs:
+#      - targets: ['asir_nextcloud:9205']
+#    metrics_path: /metrics
+#    scrape_interval: 15s
+#    relabel_configs:
+#      - source_labels: [__address__]
+#        target_label: instance
+#        replacement: "nextcloud"
+

@@ -1,0 +1,19 @@
+# Usamos Alpine (ligero)
+FROM alpine:latest
+
+# Instalar Restic, el cliente de MariaDB (para mysqldump) y bash
+RUN apk update && \
+    apk add --no-cache restic mariadb-client bash && \
+    rm -rf /var/cache/apk/*
+
+# Crear un punto de montaje para el repositorio de restic (definido en .env)
+RUN mkdir -p /mnt/restic_repo
+
+# Ubicación de los scripts
+WORKDIR /app
+
+# Copiar scripts
+COPY scripts/ /app/
+
+# Comando para mantener el contenedor vivo si se despliega
+CMD ["sleep", "infinity"]
