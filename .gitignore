@@ -16,14 +16,36 @@ script/logs/
 # =======================
 # DOCKER DATA (no versionar)
 # =======================
-docker/nextcloud/data/
-docker/nextcloud/db/
-docker/nextcloud/html/data/
-docker/ldap/data/
-docker/ldap/config/
-docker/backup/repo/
-monitoring/grafana_data/
-monitoring/prometheus/data/
+# Nextcloud (solo contenido, no carpetas)
+docker/nextcloud/data/*
+!docker/nextcloud/data/.gitkeep
+
+docker/nextcloud/db/*
+!docker/nextcloud/db/.gitkeep
+
+docker/nextcloud/config/*
+!docker/nextcloud/config/.gitkeep
+
+docker/nextcloud/html/*
+!docker/nextcloud/html/.gitkeep
+
+# LDAP
+docker/ldap/data/*
+!docker/ldap/data/.gitkeep
+
+docker/ldap/config/*
+!docker/ldap/config/.gitkeep
+
+# Backup de Restic
+docker/backup/repo/*
+!docker/backup/repo/.gitkeep
+
+# Monitoring
+monitoring/grafana_data/*
+!monitoring/grafana_data/.gitkeep
+
+monitoring/prometheus/data/*
+!monitoring/prometheus/data/.gitkeep
 
 # =======================
 # TEMPORAL / CACHE
