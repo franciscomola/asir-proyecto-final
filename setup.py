@@ -28,7 +28,7 @@ def generate_strong_password(length=16):
 def create_structure():
     """Crea la estructura de directorios y archivos .gitkeep necesarios."""
     print(" [INFO] Verificando estructura de directorios...")
-    
+
     for folder in FOLDERS_TO_CREATE:
         path = os.path.join(PROJECT_ROOT, folder)
         os.makedirs(path, exist_ok=True)
@@ -39,9 +39,8 @@ def create_structure():
             try:
                 open(gitkeep, "w").close()
             except PermissionError:
-                # Si la carpeta es de root (ej: despliegue previo), se ignora
                 pass
-    
+
     print(" [OK] Estructura verificada.")
 
 def set_docker_permissions():
@@ -53,10 +52,8 @@ def set_docker_permissions():
 
     # Rutas base
     nc_base = os.path.join(PROJECT_ROOT, "docker", "nextcloud")
-    
+
     # Mapeo de rutas y usuarios
-    # www-data (Alpine) = 82:82
-    # mysql = 999:999
     permissions_map = [
         (os.path.join(nc_base, "html"), "82:82"),
         (os.path.join(nc_base, "config"), "82:82"),
@@ -72,18 +69,46 @@ def set_docker_permissions():
     except Exception as e:
         print(f" [WARN] No se pudieron aplicar permisos automáticamente: {e}")
 
+def configure_local_dns():
+    """
+    Añade la entrada DNS al archivo /etc/hosts de Linux/WSL.
+    Permite que los scripts internos resuelvan el dominio.
+    """
+    hosts_path = "/etc/hosts"
+    entry = f"127.0.0.1       {DOMAIN_NAME}"
+
+    print(f" [INFO] Configurando DNS local ({DOMAIN_NAME})...")
+    
+    try:
+        # Leemos el archivo actual
+        with open(hosts_path, "r") as f:
+            content = f.read()
+
+        if DOMAIN_NAME in content:
+            print(" [OK] Entrada DNS ya existe en /etc/hosts.")
+            return
+
+        # Si no existe, usamos sudo y tee para añadirla
+        print("      > Añadiendo entrada a /etc/hosts (requiere sudo)...")
+        cmd = f"echo '{entry}' | sudo tee -a {hosts_path} > /dev/null"
+        subprocess.run(cmd, shell=True, check=True)
+        print(" [OK] DNS local configurado exitosamente.")
+
+    except PermissionError:
+        print(" [WARN] No se tienen permisos para leer/escribir /etc/hosts.")
+    except Exception as e:
+        print(f" [WARN] No se pudo configurar el DNS automático: {e}")
+
 def generate_env_file():
     """Genera el archivo .env si no existe."""
     if os.path.exists(ENV_FILE):
         print(" [INFO] El archivo .env ya existe. Se omite la generación.")
-        # Descomentar la siguiente línea si se desea preguntar interactivo
-        # if input(" [?] ¿Sobrescribir? (s/N): ").lower() != 's': return
         return
 
     print(" [INFO] Generando nueva configuración de entorno (.env)...")
 
     nc_pass = generate_strong_password()
-    
+
     env_content = f"""# --- CONFIGURACIÓN DE DESPLIEGUE ---
 COMPOSE_PROJECT_NAME=asir_lab
 TZ=Europe/Madrid
@@ -133,7 +158,7 @@ GF_SECURITY_ADMIN_PASSWORD={generate_strong_password()}
         f.write(env_content)
 
     print(" [OK] Archivo .env generado.")
-    print(f"      > Password Admin Nextcloud: {nc_pass}")
+    print(f"       > Password Admin Nextcloud: {nc_pass}")
 
 def generate_self_signed_cert():
     """Genera certificados SSL autofirmados para Nginx."""
@@ -155,7 +180,7 @@ def generate_self_signed_cert():
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print(" [OK] Certificado generado exitosamente.")
     except FileNotFoundError:
-        print(" [ERROR] OpenSSL no encontrado en el sistema. Instale openssl.")
+        print(" [ERROR] OpenSSL no encontrado. Instale openssl.")
     except subprocess.CalledProcessError:
         print(" [ERROR] Falló la generación del certificado SSL.")
 
@@ -168,14 +193,21 @@ def main():
     generate_env_file()
     generate_self_signed_cert()
     set_docker_permissions()
+    configure_local_dns() # <--- Nueva llamada
 
     print("\n [INFO] Setup finalizado.")
-    
+
     if input("\n [?] ¿Desea iniciar los contenedores ahora? (s/N): ").lower() == 's':
         try:
             print(" [INFO] Iniciando Docker Compose...")
             subprocess.run(['docker', 'compose', '--env-file', '.env', 'up', '-d'], check=True)
-            print("\n [OK] Despliegue completado. Acceda a https://asir.local")
+            print("-" * 60)
+            print(f" [OK] Despliegue completado. Acceda a https://{DOMAIN_NAME}")
+            print("-" * 60)
+            print(" NOTA IMPORTANTE PARA WINDOWS:")
+            print(f" Si no puede acceder desde el navegador, añada esto a su hosts de Windows:")
+            print(f" 127.0.0.1       {DOMAIN_NAME}")
+            print("-" * 60)
         except subprocess.CalledProcessError:
             print("\n [ERROR] Ocurrió un error al iniciar los contenedores.")
     else:
