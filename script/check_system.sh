@@ -1,128 +1,121 @@
 #!/bin/bash
 
-######################################################
-# ASIR LAB - CHECK SYSTEM (ANTES / DESPUÉS RESTORE)
-# Realiza pruebas completas de:
-#  - Estado de contenedores
-#  - MariaDB
-#  - LDAP
-#  - Nextcloud
-#  - Permisos y carpetas clave
-######################################################
+# ======================================================
+#  AUDITORÍA DE ESTADO DEL SISTEMA (Health Check)
+# ======================================================
 
-set -e
+# Cargar variables de entorno ignorando errores si no existe
+source .env 2>/dev/null || true
 
-source .env
 PROJECT_DIR="$(pwd)"
 DATE=$(date +%Y%m%d_%H%M%S)
 LOG_DIR="$PROJECT_DIR/script/logs"
-LOG_FILE="$LOG_DIR/check_$DATE.log"
+LOG_FILE="$LOG_DIR/system_check_$DATE.log"
+ERRORS=0 # Contador global de errores
 
 mkdir -p "$LOG_DIR"
 
-echo "===================================" | tee "$LOG_FILE"
-echo "     ASIR LAB - SYSTEM CHECK       " | tee -a "$LOG_FILE"
-echo " Fecha: $DATE                       " | tee -a "$LOG_FILE"
-echo "===================================" | tee -a "$LOG_FILE"
-echo | tee -a "$LOG_FILE"
+# Función para registrar en pantalla y archivo
+log() {
+    echo "$1" | tee -a "$LOG_FILE"
+}
 
-#############################################
-# 1. ESTADO DE CONTENEDORES
-#############################################
-echo "[1/6] Comprobando contenedores Docker..." | tee -a "$LOG_FILE"
-docker ps | tee -a "$LOG_FILE"
-echo | tee -a "$LOG_FILE"
+log "==================================="
+log "   REPORTE DE ESTADO: ASIR LAB"
+log "   Fecha: $DATE"
+log "==================================="
+log ""
 
-#############################################
-# 2. COMPROBACIÓN MARIADB
-#############################################
-echo "[2/6] Probando MariaDB..." | tee -a "$LOG_FILE"
+# ----------------------------------------
+# 1. CONTENEDORES DOCKER
+# ----------------------------------------
+log "[1/5] Verificando contenedores activos..."
 
-docker exec asir_mariadb mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" -e "SHOW DATABASES;" 2>&1 | tee -a "$LOG_FILE"
+RUNNING=$(docker compose ps -q | wc -l)
+EXPECTED=10  # Ajustado a tus 10 servicios reales
 
-if [ $? -eq 0 ]; then
-    echo "✔ Conexión a MariaDB OK" | tee -a "$LOG_FILE"
+if [ "$RUNNING" -ge "$EXPECTED" ]; then
+    log " [OK] Hay $RUNNING contenedores en ejecución."
 else
-    echo "✘ Error al conectar a MariaDB" | tee -a "$LOG_FILE"
+    log " [WARN] ¡Atención! Solo hay $RUNNING contenedores activos (se esperaban ~$EXPECTED)."
+    # No sumamos error crítico aquí, solo aviso
 fi
+# Tabla resumen
+docker compose ps --format "table {{.Service}}\t{{.Status}}\t{{.Ports}}" | tee -a "$LOG_FILE"
+log ""
 
-echo | tee -a "$LOG_FILE"
+# ----------------------------------------
+# 2. BASE DE DATOS (MARIADB)
+# ----------------------------------------
+log "[2/5] Test de conexión MariaDB..."
 
-#############################################
-# 3. COMPROBACIÓN LDAP
-#############################################
-echo "[3/6] Probando LDAP..." | tee -a "$LOG_FILE"
-
-docker exec asir_openldap ldapsearch -x -LLL -b "$LDAP_BASE_DN" "(objectClass=*)" dn 2>&1 | tee -a "$LOG_FILE"
-
-if [ $? -eq 0 ]; then
-    echo "✔ LDAP responde correctamente" | tee -a "$LOG_FILE"
+if docker exec asir_mariadb mariadb-admin -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" ping > /dev/null 2>&1; then
+    log " [OK] MariaDB está respondiendo (Ping exitoso)."
 else
-    echo "✘ Error en la conexión a LDAP" | tee -a "$LOG_FILE"
+    log " [ERROR] No se puede conectar a MariaDB."
+    ERRORS=$((ERRORS+1))
 fi
+log ""
 
-echo | tee -a "$LOG_FILE"
+# ----------------------------------------
+# 3. DIRECTORIO ACTIVO (LDAP)
+# ----------------------------------------
+log "[3/5] Test de conexión LDAP..."
 
-#############################################
-# 4. NEXTCLOUD - TEST HTTP
-#############################################
-echo "[4/6] Probando acceso HTTP a Nextcloud..." | tee -a "$LOG_FILE"
+# Usamos credenciales de administrador para evitar rechazo por búsqueda anónima
+BIND_DN="cn=admin,${LDAP_BASE_DN}"
 
-NC_URL="http://localhost"
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$NC_URL/status.php")
-
-echo "Código HTTP: $HTTP_CODE" | tee -a "$LOG_FILE"
-
-if [ "$HTTP_CODE" = "200" ]; then
-    echo "✔ Nextcloud responde correctamente" | tee -a "$LOG_FILE"
+if docker exec asir_openldap ldapsearch -x -D "$BIND_DN" -w "$LDAP_ADMIN_PASSWORD" -b "$LDAP_BASE_DN" -s base > /dev/null 2>&1; then
+    log " [OK] LDAP responde consultas correctamente (Autenticado)."
 else
-    echo "✘ ERROR: Nextcloud no responde correctamente" | tee -a "$LOG_FILE"
+    log " [ERROR] Falló la consulta a LDAP."
+    ERRORS=$((ERRORS+1))
 fi
+log ""
 
-echo | tee -a "$LOG_FILE"
+# ----------------------------------------
+# 4. NEXTCLOUD (WEB HTTPS)
+# ----------------------------------------
+log "[4/5] Test de respuesta Web (Nextcloud)..."
 
-#############################################
-# 5. PERMISOS DE DIRECTORIOS
-#############################################
-echo "[5/6] Comprobando permisos de carpetas..." | tee -a "$LOG_FILE"
+HTTP_CODE=$(curl -k -s -o /dev/null -w "%{http_code}" "https://localhost/status.php")
 
-dirs=(
-    "docker/nextcloud/html"
-    "docker/nextcloud/data"
-    "docker/nextcloud/config"
-    "docker/ldap/data"
-    "docker/ldap/config"
-)
+if [ "$HTTP_CODE" == "200" ]; then
+    log " [OK] Web responde correctamente (HTTPS 200)."
+elif [ "$HTTP_CODE" == "000" ]; then
+    log " [ERROR] No se pudo conectar con Nginx (¿Puerto caído?)."
+    ERRORS=$((ERRORS+1))
+else
+    log " [WARN] Web responde con código inesperado: $HTTP_CODE"
+    ERRORS=$((ERRORS+1))
+fi
+log ""
 
-for d in "${dirs[@]}"; do
-    echo "- $d" | tee -a "$LOG_FILE"
-    ls -ld "$PROJECT_DIR/$d" | tee -a "$LOG_FILE"
-done
+# ----------------------------------------
+# 5. INTEGRIDAD DE ARCHIVOS
+# ----------------------------------------
+log "[5/5] Verificación de archivos críticos..."
 
-echo | tee -a "$LOG_FILE"
-
-#############################################
-# 6. COMPROBACIÓN DE ARCHIVOS CLAVE
-#############################################
-echo "[6/6] Comprobando archivos clave..." | tee -a "$LOG_FILE"
-
-files=(
+FILES=(
     "docker/nextcloud/config/config.php"
-    "docker/ldap/config/cn=config.ldif"
+    "docker/nginx/certs/nextcloud.crt"
+    ".env"
 )
 
-for f in "${files[@]}"; do
+for f in "${FILES[@]}"; do
     if [ -f "$PROJECT_DIR/$f" ]; then
-        echo "✔ Encontrado: $f" | tee -a "$LOG_FILE"
+        log " [OK] Encontrado: $f"
     else
-        echo "✘ NO encontrado: $f" | tee -a "$LOG_FILE"
+        log " [ERROR] FALTA: $f"
+        ERRORS=$((ERRORS+1))
     fi
 done
 
-echo | tee -a "$LOG_FILE"
-
-echo "====================================" | tee -a "$LOG_FILE"
-echo " CHECK COMPLETADO - LOG EN:"          | tee -a "$LOG_FILE"
-echo " $LOG_FILE"                           | tee -a "$LOG_FILE"
-echo "====================================" | tee -a "$LOG_FILE"
-
+log ""
+log "==================================="
+if [ $ERRORS -eq 0 ]; then
+    log " ✅ ESTADO GLOBAL: SALUDABLE"
+else
+    log " ❌ ESTADO GLOBAL: CON ERRORES ($ERRORS)"
+fi
+log "==================================="

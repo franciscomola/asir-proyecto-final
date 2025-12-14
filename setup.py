@@ -3,219 +3,183 @@ import os
 import subprocess
 import random
 import string
-import shutil
+import sys
 
-# --- Variables de Configuración ---
+# --- CONFIGURACIÓN DEL PROYECTO ---
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-DOCKER_BASE = os.path.join(PROJECT_ROOT, "docker", "nextcloud")
 ENV_FILE = os.path.join(PROJECT_ROOT, '.env')
-DOMAIN_NAME = "asir.local"  # Tu dominio real
+DOMAIN_NAME = "asir.local"
 
-# --- Estructura de Carpetas ---
+# Carpetas requeridas por el despliegue Docker
 FOLDERS_TO_CREATE = [
     'docker/ldap/config', 'docker/ldap/data',
-    'docker/nextcloud/config', 'docker/nextcloud/data', 'docker/nextcloud/html',
+    'docker/nextcloud/config', 'docker/nextcloud/data', 'docker/nextcloud/html', 'docker/nextcloud/db',
     'docker/nginx/conf.d', 'docker/nginx/certs',
     'docker/backup/repo', 'docker/backup/tmp',
-    'logs'
+    'script/logs',
+    'monitoring/grafana_data', 'monitoring/prometheus/data'
 ]
 
-# --- Funciones de Utilidad ---
-
 def generate_strong_password(length=16):
+    """Genera una contraseña alfanumérica aleatoria."""
     chars = string.ascii_letters + string.digits
     return ''.join(random.choice(chars) for i in range(length))
 
-
-def create_folders():
-    print("🛠️  Creando estructura de carpetas...")
+def create_structure():
+    """Crea la estructura de directorios y archivos .gitkeep necesarios."""
+    print(" [INFO] Verificando estructura de directorios...")
+    
     for folder in FOLDERS_TO_CREATE:
         path = os.path.join(PROJECT_ROOT, folder)
         os.makedirs(path, exist_ok=True)
 
-        # Crear .gitkeep si no existe (buena práctica)
+        # Crear .gitkeep para persistencia en git
         gitkeep = os.path.join(path, ".gitkeep")
         if not os.path.exists(gitkeep):
-            open(gitkeep, "w").close()
+            try:
+                open(gitkeep, "w").close()
+            except PermissionError:
+                # Si la carpeta es de root (ej: despliegue previo), se ignora
+                pass
+    
+    print(" [OK] Estructura verificada.")
 
-        print(f"   + Verificado: {folder}")
+def set_docker_permissions():
+    """
+    Asigna los permisos UID/GID requeridos por los contenedores.
+    Requiere privilegios de sudo.
+    """
+    print(" [INFO] Ajustando permisos de volúmenes (requiere sudo)...")
 
+    # Rutas base
+    nc_base = os.path.join(PROJECT_ROOT, "docker", "nextcloud")
+    
+    # Mapeo de rutas y usuarios
+    # www-data (Alpine) = 82:82
+    # mysql = 999:999
+    permissions_map = [
+        (os.path.join(nc_base, "html"), "82:82"),
+        (os.path.join(nc_base, "config"), "82:82"),
+        (os.path.join(nc_base, "data"), "82:82"),
+        (os.path.join(nc_base, "db"), "999:999")
+    ]
 
-def clear_folder(path):
-    """Elimina el contenido de una carpeta sin borrar la carpeta en sí."""
-    if not os.path.exists(path):
-        return
-
-    for item in os.listdir(path):
-        item_path = os.path.join(path, item)
-        if os.path.isdir(item_path):
-            shutil.rmtree(item_path)
-        else:
-            os.remove(item_path)
-
-
-def reset_nextcloud_permissions():
-    print("\n🔄 Reiniciando estructura de Nextcloud...")
-
-    paths = {
-        "db": os.path.join(DOCKER_BASE, "db"),
-        "config": os.path.join(DOCKER_BASE, "config"),
-        "html": os.path.join(DOCKER_BASE, "html"),
-        "data": os.path.join(DOCKER_BASE, "data")
-    }
-
-    # Asegurar que existen
-    for p in paths.values():
-        os.makedirs(p, exist_ok=True)
-
-    # 1 — Limpieza de archivos (sin tocar .gitkeep)
-    for key, path in paths.items():
-        print(f"   - Limpiando {key}...")
-        for item in os.listdir(path):
-            if item == ".gitkeep":
-                continue
-            item_path = os.path.join(path, item)
-            if os.path.isdir(item_path):
-                shutil.rmtree(item_path)
-            else:
-                os.remove(item_path)
-
-    # 2 — Permisos
-    print("   - Asignando permisos...")
-
-    def chown_safe(path, uid, gid):
-        try:
-            subprocess.run(["sudo", "chown", "-R", f"{uid}:{gid}", path], check=True)
-        except:
-            print(f"⚠ No se pudo aplicar permisos en {path}")
-
-    chown_safe(paths["html"], 82, 82)
-    chown_safe(paths["config"], 82, 82)
-    chown_safe(paths["data"], 82, 82)
-    chown_safe(paths["db"], 999, 999)
-
-    print("   ✔ Reset completo.")
-
+    try:
+        for path, ownership in permissions_map:
+            if os.path.exists(path):
+                subprocess.run(["sudo", "chown", "-R", ownership, path], check=False)
+        print(" [OK] Permisos aplicados correctamente.")
+    except Exception as e:
+        print(f" [WARN] No se pudieron aplicar permisos automáticamente: {e}")
 
 def generate_env_file():
+    """Genera el archivo .env si no existe."""
     if os.path.exists(ENV_FILE):
-        print("\n⚠️  El archivo .env ya existe.")
-        resp = input("   ¿Quieres sobrescribirlo? (s/N): ")
-        if resp.lower() != 's':
-            print("   -> Conservando .env actual.")
-            return
+        print(" [INFO] El archivo .env ya existe. Se omite la generación.")
+        # Descomentar la siguiente línea si se desea preguntar interactivo
+        # if input(" [?] ¿Sobrescribir? (s/N): ").lower() != 's': return
+        return
 
-    print("\n🔐 Generando nuevo archivo .env...")
+    print(" [INFO] Generando nueva configuración de entorno (.env)...")
 
     nc_pass = generate_strong_password()
-    ldap_pass = "ldappass"
-    db_root_pass = generate_strong_password()
-    db_user_pass = generate_strong_password()
-    restic_pass = generate_strong_password()
-    grafana_pass = generate_strong_password()
-
-    env_content = f"""# --- Proyecto ---
+    
+    env_content = f"""# --- CONFIGURACIÓN DE DESPLIEGUE ---
 COMPOSE_PROJECT_NAME=asir_lab
 TZ=Europe/Madrid
 PROJECT_NAME=asir_lab
 DOMAIN_NAME={DOMAIN_NAME}
 
-# --- LDAP ---
+# --- OPENLDAP ---
 LDAP_ORGANISATION="ASIR LAB"
 LDAP_DOMAIN={DOMAIN_NAME}
 LDAP_BASE_DN=dc=asir,dc=local
-LDAP_ADMIN_PASSWORD={ldap_pass}
+LDAP_ADMIN_PASSWORD=ldappass
 LDAP_HOST=asir_openldap
 
-# --- phpLDAPadmin ---
+# --- PHPLDAPADMIN ---
 PHPLDAPADMIN_HTTPS=false
 PHPLDAPADMIN_LDAP_HOSTS=asir_openldap
+PHP_LDAPADMIN_PORT=8080
 
-# --- Base de datos ---
-MYSQL_ROOT_PASSWORD={db_root_pass}
+# --- DATABASE ---
+MYSQL_ROOT_PASSWORD={generate_strong_password()}
 MYSQL_USER=nextcloud
-MYSQL_PASSWORD={db_user_pass}
+MYSQL_PASSWORD={generate_strong_password()}
 MYSQL_DATABASE=nextcloud
 
-# --- Nextcloud ---
+# --- NEXTCLOUD ---
 NEXTCLOUD_VERSION=28.0
 NEXTCLOUD_ADMIN_USER=ncadmin
 NEXTCLOUD_ADMIN_PASSWORD={nc_pass}
 NEXTCLOUD_TRUSTED_DOMAINS="lab.local {DOMAIN_NAME} localhost 127.0.0.1"
 OVERWRITEHOST={DOMAIN_NAME}
 
-# --- Restic ---
-RESTIC_PASSWORD={restic_pass}
+# --- BACKUP ---
+RESTIC_PASSWORD={generate_strong_password()}
 RESTIC_REPOSITORY=./docker/backup/repo
 
-# --- Puertos ---
+# --- SERVIDOR WEB ---
 HTTP_PORT=80
 HTTPS_PORT=443
-GRAFANA_PORT=3000
-PHP_LDAPADMIN_PORT=8080
 
-# --- Grafana ---
+# --- MONITORIZACIÓN ---
+GRAFANA_PORT=3000
 GF_SECURITY_ADMIN_USER=admin
-GF_SECURITY_ADMIN_PASSWORD={grafana_pass}
+GF_SECURITY_ADMIN_PASSWORD={generate_strong_password()}
 """
 
     with open(ENV_FILE, 'w') as f:
         f.write(env_content)
 
-    print("   ✔ .env generado")
-    print(f"   Nextcloud Admin Password: {nc_pass}")
-    print(f"   LDAP Admin Password: {ldap_pass}")
-
+    print(" [OK] Archivo .env generado.")
+    print(f"      > Password Admin Nextcloud: {nc_pass}")
 
 def generate_self_signed_cert():
-    cert_path = os.path.join(PROJECT_ROOT, 'docker/nginx/certs')
-    key_file = os.path.join(cert_path, 'nextcloud.key')
-    crt_file = os.path.join(cert_path, 'nextcloud.crt')
+    """Genera certificados SSL autofirmados para Nginx."""
+    cert_dir = os.path.join(PROJECT_ROOT, 'docker/nginx/certs')
+    key_file = os.path.join(cert_dir, 'nextcloud.key')
+    crt_file = os.path.join(cert_dir, 'nextcloud.crt')
 
     if os.path.exists(key_file):
-        print("\n🔒 Certificado SSL ya existe. Omitiendo.")
+        print(" [INFO] Certificados SSL detectados. Se omite generación.")
         return
 
-    print("\n🔒 Generando certificado SSL autofirmado...")
-
+    print(" [INFO] Generando certificado SSL autofirmado...")
     try:
         subprocess.run([
             'openssl', 'req', '-x509', '-nodes', '-days', '365', '-newkey', 'rsa:2048',
             '-keyout', key_file,
             '-out', crt_file,
             '-subj', f"/C=ES/ST=Madrid/L=Madrid/O=ASIR Lab/CN={DOMAIN_NAME}"
-        ], check=True)
-        print("   ✔ Certificado generado")
-    except Exception as e:
-        print(f"[ERROR] Falló la generación del certificado: {e}")
-
-
-def run_docker_compose():
-    print("\n🐳 Lanzando Docker Compose...")
-    try:
-        subprocess.run(['docker', 'compose', '--env-file', '.env', 'up', '-d'], check=True)
-        print("   ✔ Servicios levantados.")
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(" [OK] Certificado generado exitosamente.")
+    except FileNotFoundError:
+        print(" [ERROR] OpenSSL no encontrado en el sistema. Instale openssl.")
     except subprocess.CalledProcessError:
-        print("   ❌ ERROR al lanzar Docker Compose.")
-
+        print(" [ERROR] Falló la generación del certificado SSL.")
 
 def main():
-    print("=" * 60)
-    print(f"  ASIR LAB: Setup Script ({DOMAIN_NAME})")
-    print("=" * 60)
+    print("-" * 60)
+    print(f" SISTEMA DE DESPLIEGUE AUTOMATIZADO: {DOMAIN_NAME}")
+    print("-" * 60)
 
-    create_folders()
-    reset_nextcloud_permissions()
+    create_structure()
     generate_env_file()
     generate_self_signed_cert()
+    set_docker_permissions()
 
-    if input("\n¿Lanzar contenedores ahora? (s/N): ").lower() == 's':
-        run_docker_compose()
+    print("\n [INFO] Setup finalizado.")
+    
+    if input("\n [?] ¿Desea iniciar los contenedores ahora? (s/N): ").lower() == 's':
+        try:
+            print(" [INFO] Iniciando Docker Compose...")
+            subprocess.run(['docker', 'compose', '--env-file', '.env', 'up', '-d'], check=True)
+            print("\n [OK] Despliegue completado. Acceda a https://asir.local")
+        except subprocess.CalledProcessError:
+            print("\n [ERROR] Ocurrió un error al iniciar los contenedores.")
     else:
-        print("\nSetup finalizado. Ejecuta:")
-        print("   docker compose --env-file .env up -d")
-
+        print("      Ejecute manualmente: docker compose --env-file .env up -d")
 
 if __name__ == "__main__":
     main()
-

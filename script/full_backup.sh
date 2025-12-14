@@ -1,68 +1,65 @@
 #!/bin/bash
+set -e
 
-###############################################
-# ASIR LAB - FULL BACKUP (EJECUTAR DESDE RAÍZ)
-###############################################
+# Configuración del entorno
+if [ -f .env ]; then
+    source .env
+else
+    echo " [ERROR] No se encuentra el archivo .env en la raíz."
+    exit 1
+fi
 
-set -e  # Parar si ocurre un error
-
-# Cargar variables del .env que está en la raíz del proyecto
-source .env
-
-# Nombre de la red docker generada por docker compose
-NETWORK="${COMPOSE_PROJECT_NAME}_asir_net"
-
-# Directorio absoluto del proyecto
 PROJECT_DIR="$(pwd)"
-
-# Carpeta para este backup
 DATE=$(date +%Y%m%d_%H%M%S)
-TMP_DIR="$PROJECT_DIR/script/logs/fullbackup_$DATE"
+TMP_DIR="$PROJECT_DIR/script/logs/backup_tmp_$DATE"
 
+# Crear directorio temporal para volcados
 mkdir -p "$TMP_DIR"
 
-echo "=============================="
-echo "  ASIR LAB - FULL BACKUP"
-echo "  Fecha: $DATE"
-echo "=============================="
+echo "=========================================="
+echo " COPIA DE SEGURIDAD COMPLETA (Restic)"
+echo " Fecha: $DATE"
+echo "=========================================="
 
-################################
-# 1. BACKUP BASE DE DATOS
-################################
-echo "[1/3] Exportando base de datos MariaDB..."
+# ----------------------------------------
+# 1. EXTRACCIÓN DE BASES DE DATOS (HOT DUMP)
+# ----------------------------------------
+echo " [1/4] Exportando base de datos MariaDB..."
 
-docker exec asir_mariadb /usr/bin/mysqldump -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" | tee "$TMP_DIR/db_backup.sql" > /dev/null
+# Usamos mariadb-dump para asegurar consistencia
+docker exec asir_mariadb mariadb-dump \
+    -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" \
+    --single-transaction --quick --lock-tables=false \
+    > "$TMP_DIR/nextcloud-db.sql"
 
+echo " [OK] Dump SQL generado."
 
-echo "✔ Base de datos exportada a $TMP_DIR/db_backup.sql"
+# ----------------------------------------
+# 2. EXTRACCIÓN DE LDAP
+# ----------------------------------------
+echo " [2/4] Exportando directorio LDAP..."
 
+docker exec asir_openldap slapcat > "$TMP_DIR/ldap-backup.ldif"
 
-################################
-# 2. BACKUP LDAP (slapcat)
-################################
-echo "[2/3] Exportando LDAP (slapcat)..."
+echo " [OK] Exportación LDAP generada."
 
-docker exec asir_openldap slapcat > "$TMP_DIR/ldap.ldif"
-
-echo "✔ LDAP exportado a $TMP_DIR/ldap.ldif"
-
-
-
-################################
-# 3. SNAPSHOT RESTIC
-################################
-# Inicializar repositorio Restic si no existe
+# ----------------------------------------
+# 3. EJECUCIÓN DE RESTIC
+# ----------------------------------------
+# Inicializar repositorio si es la primera vez
 if [ ! -f "$PROJECT_DIR/docker/backup/repo/config" ]; then
-    echo "[3/3] Inicializando repositorio Restic..."
+    echo " [INFO] Inicializando repositorio Restic por primera vez..."
     docker run --rm \
       -v "$PROJECT_DIR/docker/backup/repo:/mnt/restic_repo" \
       -e RESTIC_PASSWORD="$RESTIC_PASSWORD" \
       restic/restic init -r /mnt/restic_repo
 fi
-echo "[3/3] Creando snapshot con Restic..."
 
+echo " [3/4] Enviando datos al repositorio cifrado..."
+
+# Montamos volúmenes en solo lectura (:ro) para asegurar integridad
 docker run --rm \
-  --network "$NETWORK" \
+  --hostname docker-backup-host \
   -v "$PROJECT_DIR/docker/backup/repo:/mnt/restic_repo" \
   -v "$PROJECT_DIR/docker/nextcloud/html:/data/html:ro" \
   -v "$PROJECT_DIR/docker/nextcloud/data:/data/ncdata:ro" \
@@ -71,21 +68,18 @@ docker run --rm \
   -v "$PROJECT_DIR/docker/ldap/config:/data/ldapconfig:ro" \
   -v "$TMP_DIR:/data/exports:ro" \
   -e RESTIC_PASSWORD="$RESTIC_PASSWORD" \
-  restic/restic \
-  -r /mnt/restic_repo \
-  backup /data \
+  restic/restic -r /mnt/restic_repo backup /data \
   --tag "full-backup" \
-  --tag "$DATE"
+  --tag "scheduled"
 
-echo "✔ Snapshot Restic creado con éxito"
+echo " [OK] Snapshot Restic creado."
 
+# ----------------------------------------
+# 4. LIMPIEZA
+# ----------------------------------------
+echo " [4/4] Limpiando archivos temporales..."
+rm -rf "$TMP_DIR"
 
-################################
-# FIN
-################################
-echo
-echo "===================================="
-echo " BACKUP COMPLETO REALIZADO CON ÉXITO"
-echo " Carpeta temporal: $TMP_DIR"
-echo "===================================="
-
+echo "=========================================="
+echo " [OK] BACKUP FINALIZADO EXITOSAMENTE"
+echo "=========================================="
